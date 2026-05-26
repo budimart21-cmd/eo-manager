@@ -3,8 +3,9 @@
  * EO Form Builder
  * - Shortcode [eo_form] dan [eo_form id="X"]
  * - Render form HTML dengan radio produk, field custom, submit via REST
- * - Semua WA/Email dikirim server-side (bypass CORS, tiru trik clo-wa-proxy)
- * - Nonce menggunakan wp_create_nonce('wp_rest') agar valid untuk guest/non-login
+ * - Title & Desc form bisa dikustomisasi per produk
+ * - Harga disimpan sebagai integer; tampil FREE jika 0, Rp xxx.xxx jika > 0
+ * - Semua WA/Email dikirim server-side (bypass CORS)
  */
 class EO_Form_Builder {
 
@@ -14,6 +15,8 @@ class EO_Form_Builder {
 
     public static function get_form_config( $post_id ) {
         $default = [
+            'form_title'      => '',
+            'form_desc'       => '',
             'fields'          => self::default_fields(),
             'wa_template'     => self::default_wa_template(),
             'email_subject'   => 'Terima kasih telah menghubungi kami — {site_name}',
@@ -42,11 +45,25 @@ class EO_Form_Builder {
     }
 
     public static function default_wa_template() {
-        return "Halo {nama}! 👋\n\nTerima kasih telah menghubungi *{site_name}*.\n\nPilihan: *{pilihan}*\n{harga}\n\nTim kami akan segera menghubungi Anda. 🙏\n\n_— Tim {site_name}_";
+        return "Halo {nama}! 👋\n\nTerima kasih telah menghubungi *{site_name}*.\n\nProduk: *{nama_produk}*\nPilihan: *{pilihan}*\n{harga}\n\nTim kami akan segera menghubungi Anda. 🙏\n\n_— Tim {site_name}_";
     }
 
     public static function default_email_template() {
-        return '<p>Halo <strong>{nama}</strong>,</p><p>Terima kasih telah menghubungi <strong>{site_name}</strong>.</p><p>Pilihan Anda: <strong>{pilihan}</strong>{harga}</p><p>Tim kami akan segera menghubungi Anda.</p>';
+        return '<p>Halo <strong>{nama}</strong>,</p><p>Terima kasih telah menghubungi <strong>{site_name}</strong>.</p><p>Produk: <strong>{nama_produk}</strong><br>Pilihan Anda: <strong>{pilihan}</strong>{harga}</p><p>Tim kami akan segera menghubungi Anda.</p>';
+    }
+
+    /**
+     * Format harga integer menjadi tampilan:
+     * 0        → "FREE"
+     * 150000   → "Rp 150.000,-"
+     *
+     * @param int|string $price_num
+     * @return string
+     */
+    public static function format_price( $price_num ) {
+        $num = (int) $price_num;
+        if ( $num === 0 ) return 'FREE';
+        return 'Rp ' . number_format( $num, 0, ',', '.' ) . ',-';
     }
 
     /**
@@ -57,8 +74,13 @@ class EO_Form_Builder {
         $fields   = $config['fields']   ?? self::default_fields();
         $products = $config['products'] ?? [];
 
-        // KUNCI ANTI-CORS: gunakan wp_create_nonce('wp_rest')
-        // Ini adalah nonce standar WordPress REST API, valid untuk semua user termasuk tamu/guest
+        // Form title & desc
+        $form_title = $config['form_title'] ?? '';
+        $form_desc  = $config['form_desc']  ?? '';
+
+        // Nama produk dari post title
+        $nama_produk = get_the_title( $post_id );
+
         $rest_nonce = wp_create_nonce( 'wp_rest' );
 
         ob_start();
@@ -66,13 +88,31 @@ class EO_Form_Builder {
         <div class="eo-form-wrap" id="eo-form-wrap-<?php echo esc_attr($post_id); ?>"
              style="background:#fff;border:1px solid #e2e8f0;border-radius:14px;padding:28px 28px 24px;max-width:520px;margin:0 auto;font-family:'DM Sans','Segoe UI',sans-serif;">
 
+            <?php if ( $form_title || $form_desc ) : ?>
+            <!-- ── Form Header ── -->
+            <div class="eo-form-header" style="margin-bottom:22px;padding-bottom:18px;border-bottom:1px solid #e2e8f0;">
+                <?php if ( $form_title ) : ?>
+                <h3 class="eo-form-title" style="margin:0 0 6px;font-size:20px;font-weight:800;color:#0f172a;line-height:1.3;">
+                    <?php echo esc_html( $form_title ); ?>
+                </h3>
+                <?php endif; ?>
+                <?php if ( $form_desc ) : ?>
+                <p class="eo-form-desc" style="margin:0;font-size:14px;color:#64748b;line-height:1.6;">
+                    <?php echo nl2br( esc_html( $form_desc ) ); ?>
+                </p>
+                <?php endif; ?>
+            </div>
+            <?php endif; ?>
+
             <div id="eo-form-body-<?php echo esc_attr($post_id); ?>">
 
                 <?php if ( ! empty($products) ) : ?>
                 <div class="eo-radio-group" style="display:flex;flex-direction:column;gap:10px;margin-bottom:20px;">
                     <?php foreach ( $products as $i => $prod ) :
-                        $pval = sanitize_key( $prod['value'] ?? 'opt_' . $i );
-                        $uid  = 'eo-opt-' . esc_attr($pval) . '-' . $post_id;
+                        $pval      = sanitize_key( $prod['value'] ?? 'opt_' . $i );
+                        $uid       = 'eo-opt-' . esc_attr($pval) . '-' . $post_id;
+                        $price_num = (int) ($prod['price'] ?? 0);
+                        $price_disp = self::format_price( $price_num );
                     ?>
                     <label class="eo-radio-label <?php echo $i === 0 ? 'eo-selected' : ''; ?>"
                            id="<?php echo $uid; ?>"
@@ -83,9 +123,9 @@ class EO_Form_Builder {
                                style="accent-color:#15803d;"
                                <?php echo $i === 0 ? 'checked' : ''; ?>>
                         <span style="flex:1;font-weight:600;font-size:14px;color:#0f172a;"><?php echo esc_html($prod['label'] ?? ''); ?></span>
-                        <?php if ( ! empty($prod['price']) ) : ?>
-                        <span style="font-weight:700;color:#15803d;font-size:14px;"><?php echo esc_html($prod['price']); ?></span>
-                        <?php endif; ?>
+                        <span style="font-weight:700;color:<?php echo $price_num === 0 ? '#0284c7' : '#15803d'; ?>;font-size:14px;white-space:nowrap;">
+                            <?php echo esc_html( $price_disp ); ?>
+                        </span>
                     </label>
                     <?php endforeach; ?>
                 </div>
@@ -130,27 +170,29 @@ class EO_Form_Builder {
                         type="button"
                         style="width:100%;background:#15803d;color:#fff;border:none;padding:14px 20px;border-radius:10px;font-size:15px;font-weight:700;cursor:pointer;transition:background .2s;font-family:inherit;">
                     <?php
-                    // Teks tombol default: ambil dari produk pertama jika ada
                     if ( ! empty($products) ) {
-                        $fp = $products[0];
-                        echo ! empty($fp['price'])
-                            ? '🛒 Pesan ' . esc_html($fp['label']) . ' (' . esc_html($fp['price']) . ') →'
-                            : '📋 ' . esc_html($fp['label']) . ' →';
+                        $fp        = $products[0];
+                        $fp_price  = (int) ($fp['price'] ?? 0);
+                        $fp_disp   = self::format_price( $fp_price );
+                        echo $fp_price === 0
+                            ? '📋 ' . esc_html($fp['label']) . ' (FREE) →'
+                            : '🛒 Pesan ' . esc_html($fp['label']) . ' (' . esc_html($fp_disp) . ') →';
                     } else {
                         echo '✉️ Kirim →';
                     }
                     ?>
                 </button>
 
-                <!-- Data diteruskan ke JS — TIDAK ada token sensitif di sini -->
+                <!-- Data form untuk JS — tidak ada token sensitif -->
                 <script>
                 (function(){
                     window._eoForms = window._eoForms || {};
                     window._eoForms[<?php echo (int)$post_id; ?>] = {
-                        post_id  : <?php echo (int)$post_id; ?>,
-                        nonce    : <?php echo wp_json_encode( $rest_nonce ); ?>,
-                        fields   : <?php echo wp_json_encode( $fields ); ?>,
-                        products : <?php echo wp_json_encode( $products ); ?>,
+                        post_id      : <?php echo (int)$post_id; ?>,
+                        nonce        : <?php echo wp_json_encode( $rest_nonce ); ?>,
+                        fields       : <?php echo wp_json_encode( $fields ); ?>,
+                        products     : <?php echo wp_json_encode( $products ); ?>,
+                        nama_produk  : <?php echo wp_json_encode( $nama_produk ); ?>,
                         success_title   : <?php echo wp_json_encode( $config['success_title'] ); ?>,
                         success_message : <?php echo wp_json_encode( $config['success_message'] ); ?>,
                         notify_wa_fallback : <?php echo wp_json_encode( $config['notify_wa'] ?: get_option('eo_notify_wa','') ); ?>
@@ -185,12 +227,10 @@ class EO_Form_Builder {
         $atts    = shortcode_atts([ 'id' => get_the_ID() ], $atts, 'eo_form' );
         $post_id = (int) $atts['id'];
         if ( ! $post_id ) return '';
-        // Pastikan JS engine dimuat
         self::$needs_js = true;
         return self::render_form( $post_id );
     }
 
-    // Flag: apakah halaman ini perlu JS engine?
     public static $needs_js = false;
 
     public static function check_product_page() {
@@ -202,18 +242,11 @@ class EO_Form_Builder {
     public static function init() {
         add_shortcode( 'eo_form', [ __CLASS__, 'shortcode' ] );
         add_action( 'wp_footer', [ __CLASS__, 'maybe_print_js' ], 20 );
-        // Cek juga via hook the_content untuk halaman produk
         add_action( 'wp', [ __CLASS__, 'check_product_page' ] );
     }
 
-    /**
-     * Print JS engine hanya jika dibutuhkan di halaman ini
-     */
     public static function maybe_print_js() {
-        // Cek apakah shortcode ada di konten post manapun yang sudah di-render
-        global $wp_query;
         if ( ! self::$needs_js ) {
-            // Fallback check: scan post content
             $post = get_post();
             if ( $post && (
                 has_shortcode( $post->post_content, 'eo_form' ) ||
@@ -227,21 +260,23 @@ class EO_Form_Builder {
     }
 
     public static function print_js_engine() {
-        // REST API URL — sama-origin, tidak ada CORS
         $rest_url = esc_js( rest_url('eo/v1/submit-lead') );
         ?>
         <script>
         /* ============================================================
-           EO Form Engine
-           Cara kerja (tiru clo-wa-proxy):
-           1. Browser → POST ke /wp-json/eo/v1/submit-lead (same-origin, NO CORS)
-           2. WordPress (PHP) → simpan lead ke DB
-           3. WordPress (PHP) → kirim WA via Fonnte (server-to-server)
-           4. WordPress (PHP) → kirim Email via Mailketing (server-to-server)
-           Semua keluar dari server PHP, bukan dari browser → tidak ada CORS
+           EO Form Engine v3
+           Browser → POST /wp-json/eo/v1/submit-lead (same-origin)
+           PHP → simpan lead DB → kirim WA (Fonnte) → kirim Email (Mailketing)
            ============================================================ */
 
         var _EO_REST_URL = '<?php echo $rest_url; ?>';
+
+        /* Format harga dari integer ke tampilan */
+        function eoFormatPrice(num) {
+            num = parseInt(num) || 0;
+            if (num === 0) return 'FREE';
+            return 'Rp ' + num.toLocaleString('id-ID') + ',-';
+        }
 
         /* ── Radio select ── */
         function eoSelectOption(labelEl, val, postId) {
@@ -260,11 +295,15 @@ class EO_Form_Builder {
             if (!cfg) return;
             var prod = (cfg.products || []).find(function(p){ return p.value === val; });
             if (!prod) return;
+
             var btn = document.getElementById('eo-submit-btn-' + postId);
             if (!btn) return;
-            btn.textContent = prod.price
-                ? '🛒 Pesan ' + prod.label + ' (' + prod.price + ') →'
-                : '📋 ' + prod.label + ' →';
+
+            var priceNum  = parseInt(prod.price) || 0;
+            var priceDisp = eoFormatPrice(priceNum);
+            btn.textContent = priceNum === 0
+                ? '📋 ' + prod.label + ' (FREE) →'
+                : '🛒 Pesan ' + prod.label + ' (' + priceDisp + ') →';
         }
 
         /* ── Submit utama ── */
@@ -272,11 +311,10 @@ class EO_Form_Builder {
             var cfg = (window._eoForms || {})[postId];
             if (!cfg) { alert('Konfigurasi form tidak ditemukan.'); return; }
 
-            var fields  = cfg.fields  || [];
-            var data    = {};
-            var valid   = true;
+            var fields = cfg.fields || [];
+            var data   = {};
+            var valid  = true;
 
-            /* Kumpulkan nilai field */
             fields.forEach(function(f) {
                 var el = document.getElementById('eo-' + f.id + '-' + postId);
                 if (!el) return;
@@ -292,7 +330,6 @@ class EO_Form_Builder {
             });
             if (!valid) return;
 
-            /* Validasi WA */
             var waRaw = (data.wa || '').replace(/\D/g, '');
             if (waRaw.length < 9) {
                 alert('Nomor WhatsApp tidak valid (minimal 9 angka).');
@@ -300,78 +337,58 @@ class EO_Form_Builder {
             }
 
             /* Pilihan produk */
-            var selInput = document.querySelector(
-                'input[name="eo-pilihan-' + postId + '"]:checked'
-            );
+            var selInput = document.querySelector('input[name="eo-pilihan-' + postId + '"]:checked');
             data._pilihan_value = selInput ? selInput.value : '';
             var prod = null;
             if (cfg.products && data._pilihan_value) {
                 prod = cfg.products.find(function(p){ return p.value === data._pilihan_value; });
             }
             data._pilihan_label = prod ? (prod.label || '') : '';
-            data._pilihan_price = prod ? (prod.price || '') : '';
+            /* kirim harga sebagai angka integer string */
+            data._pilihan_price = prod ? String(parseInt(prod.price) || 0) : '0';
 
-            /* Disable tombol */
             var btn = document.getElementById('eo-submit-btn-' + postId);
             if (btn) { btn.disabled = true; btn.innerHTML = '⏳ Memproses...'; }
 
-            /* ============================================================
-               POST ke WordPress REST API (SAME ORIGIN → tidak ada CORS)
-               Header X-WP-Nonce: nonce 'wp_rest' yang di-generate server
-               ============================================================ */
             fetch(_EO_REST_URL, {
                 method  : 'POST',
                 headers : {
                     'Content-Type' : 'application/json',
-                    'X-WP-Nonce'   : cfg.nonce   /* nonce wp_rest, bukan token Fonnte */
+                    'X-WP-Nonce'   : cfg.nonce
                 },
-                body: JSON.stringify({
-                    post_id : cfg.post_id,
-                    fields  : data
-                })
+                body: JSON.stringify({ post_id: cfg.post_id, fields: data })
             })
             .then(function(r) {
                 if (!r.ok) throw new Error('HTTP ' + r.status);
                 return r.json();
             })
             .then(function(res) {
-                if (res.success) {
-                    eoShowSuccess(postId, cfg, data, prod);
-                } else {
-                    /* Server berhasil dicapai tapi ada error logic — tetap tampil sukses
-                       + buka WA manual sebagai fallback */
-                    eoFallbackWA(cfg, data, prod);
-                    eoShowSuccess(postId, cfg, data, prod);
-                }
+                eoShowSuccess(postId, cfg, data, prod);
+                if (!res.success) eoFallbackWA(cfg, data, prod);
             })
             .catch(function(err) {
                 console.error('[EO Form] fetch error:', err);
                 if (btn) { btn.disabled = false; btn.innerHTML = '✉️ Kirim →'; }
-                /* Fallback: buka WhatsApp langsung */
                 eoFallbackWA(cfg, data, prod);
-                /* Tetap tampil sukses agar UX tidak rusak */
                 eoShowSuccess(postId, cfg, data, prod);
             });
 
-            /* GA4 */
             if (typeof gtag === 'function') {
                 gtag('event', 'eo_lead_submit', {
                     event_category : 'Lead',
                     event_label    : data._pilihan_label || 'no-product',
-                    value          : data._pilihan_price || 0
+                    value          : parseInt(data._pilihan_price) || 0
                 });
             }
         }
 
-        /* Buka WA manual sebagai fallback jika semua gagal */
         function eoFallbackWA(cfg, data, prod) {
-            var waNum = (cfg.notify_wa_fallback || '').replace(/\D/, '');
+            var waNum = (cfg.notify_wa_fallback || '').replace(/\D/g, '');
             if (!waNum) return;
             var msg = 'Halo, saya ' + (data.nama || '') +
                 (data.perusahaan ? ' dari ' + data.perusahaan : '') +
                 '. Saya ingin ' +
-                (prod ? 'memesan ' + prod.label : 'menghubungi Anda') +
-                '.';
+                (prod ? 'memesan ' + prod.label : 'menghubungi Anda') + '.';
             window.open('https://wa.me/' + waNum + '?text=' + encodeURIComponent(msg), '_blank');
         }
 
