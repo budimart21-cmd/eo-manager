@@ -2,25 +2,25 @@
 /**
  * EO Integrations — Fonnte WA & Mailketing Email
  *
- * ✅ FIX v3: Endpoint Mailketing yang benar:
- *    POST https://api.mailketing.co.id/api/v1/send
- *    Parameter: form-data (bukan JSON), api_token (bukan Bearer header)
- *
- * ✅ FIX v3: Add Subscriber ke List Mailketing:
- *    POST https://api.mailketing.co.id/api/v1/addsubtolist
- *
- * ✅ NEW v3: Fallback SMTP via wp_mail (configurable via Settings)
- *
- * Strategi terbaik: API Mailketing (primary) → wp_mail SMTP (fallback)
- *   - API: email masuk ke history Mailketing, tracking open/click, clean list
- *   - SMTP fallback: jika API gagal (credits habis, token salah, dll)
+ * v3 Changes:
+ * - Tambah variabel {nama_produk} di template WA & Email
+ * - Harga diformat Rp xxx.xxx,- / FREE dari pilihan_price_num (integer)
+ * - Endpoint Mailketing: POST form-data, api_token (bukan Bearer)
+ * - Fallback SMTP via wp_mail jika Mailketing gagal
  */
 class EO_Integrations {
 
     /* ============================================================
-       KIRIM WA VIA FONNTE (server-side PHP)
-       - Authorization di header (langsung token, tanpa "Bearer")
-       - body: form-data (bukan JSON)
+       HELPER: Format harga integer → "Rp xxx.xxx,-" atau "FREE"
+       ============================================================ */
+    public static function format_price( $price_num ) {
+        $num = (int) $price_num;
+        if ( $num === 0 ) return 'FREE';
+        return 'Rp ' . number_format( $num, 0, ',', '.' ) . ',-';
+    }
+
+    /* ============================================================
+       KIRIM WA VIA FONNTE
        ============================================================ */
     public static function send_wa( $to, $message ) {
         $token = get_option('eo_fonnte_token', '');
@@ -30,7 +30,6 @@ class EO_Integrations {
         }
         if ( ! $to || ! $message ) return false;
 
-        /* Normalisasi nomor Indonesia */
         $to = preg_replace('/\D/', '', $to);
         if ( substr($to, 0, 1) === '0' ) $to = '62' . substr($to, 1);
         if ( substr($to, 0, 2) !== '62' ) $to = '62' . $to;
@@ -42,10 +41,8 @@ class EO_Integrations {
         $response = wp_remote_post( 'https://api.fonnte.com/send', [
             'timeout'   => 20,
             'sslverify' => true,
-            'headers'   => [
-                'Authorization' => $token,
-            ],
-            'body' => [
+            'headers'   => [ 'Authorization' => $token ],
+            'body'      => [
                 'target'      => $to,
                 'message'     => $message,
                 'countryCode' => '62',
@@ -70,15 +67,9 @@ class EO_Integrations {
 
     /* ============================================================
        KIRIM EMAIL VIA MAILKETING API
-       
-       ✅ ENDPOINT YANG BENAR (v3 fix):
        URL    : https://api.mailketing.co.id/api/v1/send
-       Method : POST form-data (bukan JSON)
+       Method : POST form-data
        Params : api_token, from_name, from_email, recipient, subject, content
-       
-       Syarat agar muncul di history Mailketing:
-       1. api_token harus valid (dari Mailketing → Integration)
-       2. from_email HARUS sudah diverifikasi di Add Domain Mailketing
        ============================================================ */
     public static function send_email( $to_email, $to_name, $subject, $html_body ) {
         $api_token  = get_option('eo_mailketing_api_key', '');
@@ -98,7 +89,6 @@ class EO_Integrations {
             return false;
         }
 
-        /* ✅ Payload form-data sesuai dokumentasi resmi Mailketing */
         $params = [
             'api_token'  => $api_token,
             'from_name'  => $from_name,
@@ -108,15 +98,13 @@ class EO_Integrations {
             'content'    => $html_body,
         ];
 
-        error_log('[EO Email] Mengirim ke: ' . $to_email . ' | From: ' . $from_email . ' | Subject: ' . $subject);
+        error_log('[EO Email] Mengirim ke: ' . $to_email . ' | Subject: ' . $subject);
 
         $response = wp_remote_post( 'https://api.mailketing.co.id/api/v1/send', [
             'timeout'   => 30,
             'sslverify' => true,
-            'headers'   => [
-                'Accept' => 'application/json',
-            ],
-            'body' => $params, // form-data, bukan JSON
+            'headers'   => [ 'Accept' => 'application/json' ],
+            'body'      => $params,
         ]);
 
         if ( is_wp_error($response) ) {
@@ -130,17 +118,13 @@ class EO_Integrations {
 
         error_log('[EO Email] Mailketing response HTTP ' . $code . ': ' . $body_raw);
 
-        /* Cek response */
-        $status = $body_arr['status'] ?? '';
-        if ( $status === 'success' ) {
+        if ( ($body_arr['status'] ?? '') === 'success' ) {
             return true;
         }
 
-        /* Jika gagal, log alasannya dan fallback ke SMTP */
         $reason = $body_arr['response'] ?? $body_raw;
         error_log('[EO Email] Mailketing API gagal: ' . $reason . ' — Fallback ke SMTP');
 
-        /* Fallback ke SMTP hanya jika diaktifkan di settings */
         $use_smtp_fallback = get_option('eo_smtp_fallback_enabled', '1');
         if ( $use_smtp_fallback ) {
             return self::send_email_smtp( $to_email, $to_name, $subject, $html_body );
@@ -150,32 +134,26 @@ class EO_Integrations {
     }
 
     /* ============================================================
-       ADD SUBSCRIBER KE LIST MAILKETING (opsional)
-       URL    : https://api.mailketing.co.id/api/v1/addsubtolist
-       Dipanggil saat ada lead baru yang punya email
+       ADD SUBSCRIBER KE LIST MAILKETING
        ============================================================ */
     public static function add_subscriber_to_list( $email, $first_name, $last_name = '', $phone = '', $company = '' ) {
         $api_token = get_option('eo_mailketing_api_key', '');
         $list_id   = get_option('eo_mailketing_list_id', '');
 
-        if ( ! $api_token || ! $list_id || ! is_email($email) ) {
-            return false;
-        }
-
-        $params = [
-            'api_token'  => $api_token,
-            'list_id'    => $list_id,
-            'email'      => $email,
-            'first_name' => $first_name,
-            'last_name'  => $last_name,
-            'phone'      => $phone,
-            'company'    => $company,
-        ];
+        if ( ! $api_token || ! $list_id || ! is_email($email) ) return false;
 
         $response = wp_remote_post( 'https://api.mailketing.co.id/api/v1/addsubtolist', [
             'timeout'   => 20,
             'sslverify' => true,
-            'body'      => $params,
+            'body'      => [
+                'api_token'  => $api_token,
+                'list_id'    => $list_id,
+                'email'      => $email,
+                'first_name' => $first_name,
+                'last_name'  => $last_name,
+                'phone'      => $phone,
+                'company'    => $company,
+            ],
         ]);
 
         if ( is_wp_error($response) ) {
@@ -190,8 +168,7 @@ class EO_Integrations {
     }
 
     /* ============================================================
-       GET ALL LIST dari akun Mailketing (untuk dropdown di settings)
-       URL: https://api.mailketing.co.id/api/v1/getlist
+       GET ALL LIST dari akun Mailketing
        ============================================================ */
     public static function get_mailketing_lists() {
         $api_token = get_option('eo_mailketing_api_key', '');
@@ -207,7 +184,7 @@ class EO_Integrations {
 
         if ( is_wp_error($response) ) return [];
 
-        $body = json_decode( wp_remote_retrieve_body($response), true );
+        $body  = json_decode( wp_remote_retrieve_body($response), true );
         $lists = [];
         if ( isset($body['data']) && is_array($body['data']) ) {
             foreach ( $body['data'] as $l ) {
@@ -218,17 +195,14 @@ class EO_Integrations {
             }
         }
 
-        set_transient('eo_mailketing_lists', $lists, 300); // cache 5 menit
+        set_transient('eo_mailketing_lists', $lists, 300);
         return $lists;
     }
 
     /* ============================================================
-       FALLBACK: Kirim via wp_mail (SMTP WordPress)
-       Gunakan SMTP settings dari plugin SMTP (WP Mail SMTP, dll)
-       atau dari setting EO Manager jika diisi
+       FALLBACK: Kirim via wp_mail (SMTP)
        ============================================================ */
     private static function send_email_smtp( $to_email, $to_name, $subject, $html_body ) {
-        /* Override phpmailer jika setting SMTP EO diisi */
         $smtp_host = get_option('eo_smtp_host', '');
         if ( $smtp_host ) {
             add_action('phpmailer_init', [ __CLASS__, 'configure_smtp' ]);
@@ -259,7 +233,6 @@ class EO_Integrations {
         return $result;
     }
 
-    /* Configure SMTP via PHPMailer */
     public static function configure_smtp( $phpmailer ) {
         $phpmailer->isSMTP();
         $phpmailer->Host       = get_option('eo_smtp_host', '');
@@ -273,46 +246,71 @@ class EO_Integrations {
 
     /* ============================================================
        FOLLOW-UP KE CUSTOMER (WA + Email)
+
+       Variabel tersedia:
+         {nama}        — nama customer
+         {wa}          — nomor WA customer
+         {email}       — email customer
+         {perusahaan}  — nama perusahaan customer
+         {pilihan}     — label pilihan produk/paket
+         {harga}       — harga terformat (Rp xxx.xxx,- / FREE / kosong jika tidak ada)
+         {nama_produk} — judul post/produk WordPress
+         {site_name}   — nama situs
+         {site_url}    — URL situs
+         {coa_link}    — link COA/katalog (dari config form)
        ============================================================ */
     public static function send_followup( $data, $config ) {
-        $nama    = $data['nama']           ?? '';
-        $wa      = $data['wa']             ?? '';
-        $email   = $data['email']          ?? '';
-        $perus   = $data['perusahaan']     ?? '';
-        $pilihan = $data['_pilihan_label'] ?? '';
-        $harga   = $data['_pilihan_price'] ?? '';
-        $coa     = $config['coa_link']     ?? '';
+        $nama        = $data['nama']           ?? '';
+        $wa          = $data['wa']             ?? '';
+        $email       = $data['email']          ?? '';
+        $perus       = $data['perusahaan']     ?? '';
+        $pilihan     = $data['_pilihan_label'] ?? '';
+        $price_raw   = $data['_pilihan_price'] ?? '';
+        $price_num   = (int) preg_replace('/\D/', '', $price_raw);
+        $coa         = $config['coa_link']     ?? '';
+        $post_id     = (int) ($data['post_id'] ?? 0);
+        $nama_produk = $post_id ? get_the_title($post_id) : '';
 
-        $vars = [
-            '{nama}'       => $nama,
-            '{wa}'         => $wa,
-            '{email}'      => $email,
-            '{perusahaan}' => $perus,
-            '{pilihan}'    => $pilihan,
-            '{harga}'      => $harga ? "\nHarga: *{$harga}*" : '',
-            '{site_name}'  => get_bloginfo('name'),
-            '{site_url}'   => home_url(),
-            '{coa_link}'   => $coa ?: '-',
+        // Format harga: kosong jika tidak ada pilihan, FREE/Rp jika ada
+        $harga_wa    = '';
+        $harga_email = '';
+        if ( $pilihan !== '' ) {
+            $harga_fmt   = self::format_price( $price_num );
+            $harga_wa    = "\nHarga: *{$harga_fmt}*";
+            $harga_email = ' — ' . $harga_fmt;
+        }
+
+        $vars_wa = [
+            '{nama}'        => $nama,
+            '{wa}'          => $wa,
+            '{email}'       => $email,
+            '{perusahaan}'  => $perus,
+            '{pilihan}'     => $pilihan,
+            '{harga}'       => $harga_wa,
+            '{nama_produk}' => $nama_produk,
+            '{site_name}'   => get_bloginfo('name'),
+            '{site_url}'    => home_url(),
+            '{coa_link}'    => $coa ?: '-',
         ];
+
+        $vars_email = array_merge( $vars_wa, [ '{harga}' => $harga_email ] );
 
         /* WA ke customer */
         if ( $wa ) {
-            $tmpl   = $config['wa_template'] ?? self::get_default_wa_template();
-            $msg_wa = strtr($tmpl, $vars);
-            self::send_wa($wa, $msg_wa);
+            $tmpl   = $config['wa_template'] ?? self::_default_wa_template();
+            $msg_wa = strtr( $tmpl, $vars_wa );
+            self::send_wa( $wa, $msg_wa );
         }
 
         /* Email ke customer */
         if ( $email ) {
-            $subj_tmpl = $config['email_subject']  ?? 'Terima kasih — {site_name}';
-            $body_tmpl = $config['email_template'] ?? self::get_default_email_body();
-            $vars['{harga}'] = $harga ? ' — ' . $harga : '';
-            $subject    = strtr($subj_tmpl, $vars);
-            $body_inner = strtr($body_tmpl, $vars);
-            $html       = self::wrap_email_html($body_inner, get_bloginfo('name'));
-            self::send_email($email, $nama, $subject, $html);
+            $subj_tmpl  = $config['email_subject']  ?? 'Terima kasih — {site_name}';
+            $body_tmpl  = $config['email_template'] ?? self::_default_email_body();
+            $subject    = strtr( $subj_tmpl, $vars_email );
+            $body_inner = strtr( $body_tmpl, $vars_email );
+            $html       = self::wrap_email_html( $body_inner, get_bloginfo('name') );
+            self::send_email( $email, $nama, $subject, $html );
 
-            /* Tambahkan ke list Mailketing jika setting list_id diisi */
             $nameParts = explode(' ', $nama, 2);
             self::add_subscriber_to_list(
                 $email,
@@ -328,15 +326,19 @@ class EO_Integrations {
        NOTIFIKASI INTERNAL (WA + Email ke owner/admin)
        ============================================================ */
     public static function notify_internal( $data, $config ) {
-        $nama    = $data['nama']           ?? '';
-        $wa      = $data['wa']             ?? '';
-        $email   = $data['email']          ?? '';
-        $perus   = $data['perusahaan']     ?? '';
-        $pilihan = $data['_pilihan_label'] ?? '';
-        $harga   = $data['_pilihan_price'] ?? '';
-        $sumber  = $data['_source_url']    ?? get_the_title($data['post_id'] ?? 0);
-        $site    = get_bloginfo('name');
-        $waktu   = current_time('d/m/Y H:i');
+        $nama        = $data['nama']           ?? '';
+        $wa          = $data['wa']             ?? '';
+        $email       = $data['email']          ?? '';
+        $perus       = $data['perusahaan']     ?? '';
+        $pilihan     = $data['_pilihan_label'] ?? '';
+        $price_raw   = $data['_pilihan_price'] ?? '';
+        $price_num   = (int) preg_replace('/\D/', '', $price_raw);
+        $sumber      = $data['_source_url']    ?? get_the_title($data['post_id'] ?? 0);
+        $post_id     = (int) ($data['post_id'] ?? 0);
+        $nama_produk = $post_id ? get_the_title($post_id) : '';
+        $site        = get_bloginfo('name');
+        $waktu       = current_time('d/m/Y H:i');
+        $harga_fmt   = $pilihan !== '' ? self::format_price($price_num) : '—';
 
         $wa_bisnis = $config['notify_wa'] ?: get_option('eo_notify_wa', '');
         if ( $wa_bisnis ) {
@@ -345,10 +347,12 @@ class EO_Integrations {
                 . "📱 WA: {$wa}\n"
                 . ( $email ? "📧 Email: {$email}\n" : '' )
                 . ( $perus ? "🏢 Perusahaan: {$perus}\n" : '' )
-                . "📦 Pilihan: *{$pilihan}" . ( $harga ? " — {$harga}" : '' ) . "*\n"
+                . ( $nama_produk ? "🏷️ Produk: {$nama_produk}\n" : '' )
+                . "📦 Pilihan: *{$pilihan}*\n"
+                . "💰 Harga: {$harga_fmt}\n"
                 . "🕐 Waktu: {$waktu}\n"
                 . "🌐 Sumber: {$sumber}";
-            self::send_wa($wa_bisnis, $msg);
+            self::send_wa( $wa_bisnis, $msg );
         }
 
         $email_intern = $config['notify_email'] ?: get_option('eo_notify_email', get_option('admin_email'));
@@ -359,12 +363,14 @@ class EO_Integrations {
                 . "<tr><td><b>WhatsApp</b></td><td><a href='https://wa.me/" . preg_replace('/\D/','',esc_attr($wa)) . "'>" . esc_html($wa) . "</a></td></tr>"
                 . "<tr style='background:#f0fdf4'><td><b>Email</b></td><td>" . esc_html($email ?: '-') . "</td></tr>"
                 . "<tr><td><b>Perusahaan</b></td><td>" . esc_html($perus ?: '-') . "</td></tr>"
-                . "<tr style='background:#f0fdf4'><td><b>Pilihan</b></td><td>" . esc_html($pilihan . ($harga ? ' — '.$harga : '')) . "</td></tr>"
+                . "<tr style='background:#f0fdf4'><td><b>Produk</b></td><td>" . esc_html($nama_produk ?: '-') . "</td></tr>"
+                . "<tr><td><b>Pilihan</b></td><td>" . esc_html($pilihan ?: '-') . "</td></tr>"
+                . "<tr style='background:#f0fdf4'><td><b>Harga</b></td><td><strong>" . esc_html($harga_fmt) . "</strong></td></tr>"
                 . "<tr><td><b>Waktu</b></td><td>{$waktu}</td></tr>"
                 . "<tr style='background:#f0fdf4'><td><b>Sumber</b></td><td>" . esc_html($sumber) . "</td></tr>"
                 . "</table>"
                 . "<p style='margin-top:16px'><a href='" . admin_url('admin.php?page=eo-crm') . "' style='background:#15803d;color:#fff;padding:10px 20px;border-radius:6px;text-decoration:none;font-weight:700'>Lihat di CRM Dashboard →</a></p>";
-            self::send_email($email_intern, $site, "🔔 Lead Baru: {$nama}", $html);
+            self::send_email( $email_intern, $site, "🔔 Lead Baru: {$nama} — {$harga_fmt}", $html );
         }
     }
 
@@ -381,14 +387,15 @@ class EO_Integrations {
             . '</div></body></html>';
     }
 
-    private static function get_default_wa_template() {
-        return "Halo {nama}! 👋\n\nTerima kasih telah menghubungi *{site_name}*.\n\nPilihan: *{pilihan}*{harga}\n\nTim kami akan segera menghubungi Anda. 🙏\n\n_— Tim {site_name}_";
+    /* Private default templates — dipakai jika config form kosong */
+    private static function _default_wa_template() {
+        return "Halo {nama}! 👋\n\nTerima kasih telah menghubungi *{site_name}*.\n\nProduk: *{nama_produk}*\nPilihan: *{pilihan}*{harga}\n\nTim kami akan segera menghubungi Anda. 🙏\n\n_— Tim {site_name}_";
     }
 
-    private static function get_default_email_body() {
+    private static function _default_email_body() {
         return '<p>Halo <strong>{nama}</strong>,</p>'
              . '<p>Terima kasih telah menghubungi <strong>{site_name}</strong>.</p>'
-             . '<p>Pilihan Anda: <strong>{pilihan}{harga}</strong></p>'
+             . '<p>Produk: <strong>{nama_produk}</strong><br>Pilihan Anda: <strong>{pilihan}</strong>{harga}</p>'
              . '<p>Tim kami akan segera menghubungi Anda dalam waktu 1×24 jam.</p>'
              . '<p>Salam,<br><strong>Tim {site_name}</strong></p>';
     }
