@@ -36,7 +36,7 @@ class EO_Admin {
         }
 
         /* ── Layout ── */
-        .eo-wrap { max-width: 960px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+        .eo-wrap { max-width: 1200px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
         .eo-wrap * { box-sizing: border-box; }
 
         /* ── Page header ── */
@@ -214,7 +214,6 @@ class EO_Admin {
     }
 
     public static function register_menus() {
-        /* ── Menu utama ── */
         add_menu_page(
             'EO Manager',
             '🌿 EO Manager',
@@ -237,11 +236,11 @@ class EO_Admin {
         $recent_leads = EO_Leads::get_leads(['per_page' => 5, 'page' => 1]);
 
         $stat_items = [
-            [ 'num' => $stats['total'],     'lbl' => 'Total Leads',    'color' => '#16a34a' ],
-            [ 'num' => $stats['new'],        'lbl' => 'Belum Ditindak', 'color' => '#0284c7' ],
-            [ 'num' => $stats['today'],      'lbl' => 'Hari Ini',       'color' => '#d97706' ],
-            [ 'num' => $stats['this_week'],  'lbl' => '7 Hari Terakhir','color' => '#7c3aed' ],
-            [ 'num' => $total_prods,         'lbl' => 'Produk',         'color' => '#0f172a' ],
+            [ 'num' => $stats['total'],      'lbl' => 'Total Leads',     'color' => '#16a34a' ],
+            [ 'num' => $stats['new'],         'lbl' => 'Belum Ditindak',  'color' => '#0284c7' ],
+            [ 'num' => $stats['today'],       'lbl' => 'Hari Ini',        'color' => '#d97706' ],
+            [ 'num' => $stats['this_week'],   'lbl' => '7 Hari Terakhir', 'color' => '#7c3aed' ],
+            [ 'num' => $total_prods,          'lbl' => 'Produk',          'color' => '#0f172a' ],
         ];
         ?>
         <div class="eo-wrap">
@@ -277,10 +276,11 @@ class EO_Admin {
                 <?php if ( empty($recent_leads['items']) ) : ?>
                     <p style="color:var(--eo-muted);text-align:center;padding:20px 0;">Belum ada lead. Buat produk dan share link form-nya!</p>
                 <?php else : ?>
+                <div style="overflow-x:auto;">
                 <table class="eo-table">
                     <thead>
                         <tr>
-                            <th>Nama</th><th>WA</th><th>Email</th><th>Produk</th><th>Pilihan</th><th>Status</th><th>Waktu</th>
+                            <th>Nama</th><th>WA</th><th>Email</th><th>Produk</th><th>Pilihan</th><th>Harga</th><th>Status</th><th>Waktu</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -302,12 +302,22 @@ class EO_Admin {
                         <td><?php echo esc_html($lead->email ?: '—'); ?></td>
                         <td><?php echo esc_html($lead->post_title); ?></td>
                         <td><?php echo esc_html($lead->pilihan_label); ?></td>
+                        <td>
+                            <?php if ( ! empty($lead->pilihan_price_num) && $lead->pilihan_price_num > 0 ) : ?>
+                                <strong style="color:var(--eo-green-dk);"><?php echo esc_html($lead->pilihan_price); ?></strong>
+                            <?php elseif ( ! empty($lead->pilihan_price) ) : ?>
+                                <?php echo esc_html($lead->pilihan_price); ?>
+                            <?php else : ?>
+                                <span style="color:var(--eo-border);">—</span>
+                            <?php endif; ?>
+                        </td>
                         <td><span class="eo-status eo-status-<?php echo $st_cls; ?>"><?php echo $st_lbl; ?></span></td>
                         <td><?php echo esc_html( mysql2date('d/m H:i', $lead->created_at) ); ?></td>
                     </tr>
                     <?php endforeach; ?>
                     </tbody>
                 </table>
+                </div>
                 <div style="margin-top:14px;">
                     <a href="<?php echo admin_url('admin.php?page=eo-crm'); ?>" class="eo-btn eo-btn-outline eo-btn-sm">Lihat Semua Leads →</a>
                 </div>
@@ -394,18 +404,38 @@ class EO_Admin {
             </div>
         </div>
 
+        <!-- ═══════════════════════════════════════════════════
+             SECTION: Judul & Deskripsi Form (BARU)
+             ═══════════════════════════════════════════════════ -->
+        <div class="eo-meta-section">
+            <div class="eo-meta-section-title">🏷️ Judul & Deskripsi Form</div>
+            <div class="eo-meta-field">
+                <label>Judul Form <span style="font-size:11px;font-weight:400;color:var(--eo-muted);">(tampil di atas form, opsional)</span></label>
+                <input type="text" name="eo_form_title"
+                       value="<?php echo esc_attr($config['form_title'] ?? ''); ?>"
+                       placeholder="Contoh: Pesan Sekarang / Download COA Gratis">
+                <p class="eo-meta-hint">Kosongkan jika tidak ingin menampilkan judul di atas form.</p>
+            </div>
+            <div class="eo-meta-field">
+                <label>Deskripsi Form <span style="font-size:11px;font-weight:400;color:var(--eo-muted);">(tampil di bawah judul, opsional)</span></label>
+                <textarea name="eo_form_desc" rows="2" placeholder="Contoh: Silakan isi formulir di bawah ini, tim kami akan segera membalas Anda."><?php echo esc_textarea($config['form_desc'] ?? ''); ?></textarea>
+                <p class="eo-meta-hint">Mendukung baris baru. Kosongkan jika tidak diperlukan.</p>
+            </div>
+        </div>
+
         <!-- SECTION: Pilihan Produk/Paket -->
         <div class="eo-meta-section">
             <div class="eo-meta-section-title">📦 Pilihan Produk / Paket</div>
+            <p class="eo-meta-hint" style="margin-bottom:10px;">Harga harus diisi dengan <strong>angka saja</strong> (tanpa Rp/titik/koma). Contoh: <code>150000</code>. Isi <code>0</code> untuk FREE.</p>
             <div id="eo-products-list">
                 <?php foreach ( $products as $i => $prod ) : ?>
                 <div class="eo-product-item">
                     <input type="text" name="eo_products[<?php echo $i; ?>][label]"
                            value="<?php echo esc_attr($prod['label'] ?? ''); ?>"
                            placeholder="Nama produk/paket">
-                    <input type="text" name="eo_products[<?php echo $i; ?>][price]"
+                    <input type="number" name="eo_products[<?php echo $i; ?>][price]"
                            value="<?php echo esc_attr($prod['price'] ?? ''); ?>"
-                           placeholder="Harga (opsional)">
+                           placeholder="Harga (angka, 0=FREE)" min="0" step="1000">
                     <button type="button" class="eo-btn eo-btn-danger eo-btn-sm" onclick="eoRemoveProduct(this)">✕</button>
                 </div>
                 <?php endforeach; ?>
@@ -445,7 +475,7 @@ class EO_Admin {
             <div class="eo-meta-field">
                 <label>Template Pesan WA</label>
                 <textarea name="eo_wa_template" rows="5"><?php echo esc_textarea($config['wa_template'] ?? EO_Form_Builder::default_wa_template()); ?></textarea>
-                <p class="eo-meta-hint">Variabel: <code>{nama}</code> <code>{pilihan}</code> <code>{harga}</code> <code>{site_name}</code> <code>{wa}</code> <code>{email}</code> <code>{coa_link}</code></p>
+                <p class="eo-meta-hint">Variabel: <code>{nama}</code> <code>{pilihan}</code> <code>{harga}</code> <code>{nama_produk}</code> <code>{site_name}</code> <code>{wa}</code> <code>{email}</code> <code>{coa_link}</code></p>
             </div>
         </div>
 
@@ -460,7 +490,7 @@ class EO_Admin {
             <div class="eo-meta-field">
                 <label>Body Email (HTML diperbolehkan)</label>
                 <textarea name="eo_email_template" rows="6"><?php echo esc_textarea($config['email_template'] ?? EO_Form_Builder::default_email_template()); ?></textarea>
-                <p class="eo-meta-hint">Variabel: <code>{nama}</code> <code>{pilihan}</code> <code>{harga}</code> <code>{site_name}</code></p>
+                <p class="eo-meta-hint">Variabel: <code>{nama}</code> <code>{pilihan}</code> <code>{harga}</code> <code>{nama_produk}</code> <code>{site_name}</code></p>
             </div>
         </div>
 
@@ -500,7 +530,7 @@ class EO_Admin {
             var div = document.createElement('div');
             div.className = 'eo-product-item';
             div.innerHTML = '<input type="text" name="eo_products['+i+'][label]" placeholder="Nama produk/paket">'
-                + '<input type="text" name="eo_products['+i+'][price]" placeholder="Harga (opsional)">'
+                + '<input type="number" name="eo_products['+i+'][price]" placeholder="Harga (angka, 0=FREE)" min="0" step="1000">'
                 + '<button type="button" class="eo-btn eo-btn-danger eo-btn-sm" onclick="eoRemoveProduct(this)">✕</button>';
             document.getElementById('eo-products-list').appendChild(div);
         }
@@ -533,15 +563,16 @@ class EO_Admin {
         if ( defined('DOING_AUTOSAVE') && DOING_AUTOSAVE ) return;
         if ( ! current_user_can('edit_post', $post_id) ) return;
 
-        /* Products */
+        /* Products — harga disimpan sebagai angka integer */
         $products = [];
         if ( ! empty($_POST['eo_products']) && is_array($_POST['eo_products']) ) {
             foreach ( $_POST['eo_products'] as $p ) {
                 $label = sanitize_text_field($p['label'] ?? '');
                 if ( $label ) {
+                    $price_num = (int) preg_replace('/\D/', '', $p['price'] ?? '0');
                     $products[] = [
                         'label' => $label,
-                        'price' => sanitize_text_field($p['price'] ?? ''),
+                        'price' => $price_num, // simpan sebagai integer
                         'value' => sanitize_key($label),
                     ];
                 }
@@ -569,6 +600,8 @@ class EO_Admin {
         if ( empty($fields) ) $fields = EO_Form_Builder::default_fields();
 
         $config = [
+            'form_title'      => sanitize_text_field($_POST['eo_form_title']          ?? ''),
+            'form_desc'       => sanitize_textarea_field($_POST['eo_form_desc']        ?? ''),
             'products'        => $products,
             'fields'          => $fields,
             'wa_template'     => sanitize_textarea_field($_POST['eo_wa_template']      ?? ''),
