@@ -71,3 +71,10 @@ add_action( 'plugins_loaded', function() {
     EO_Display_Settings::init();
     EO_Omset_Page::init();
 });
+
+add_action('admin_init', function() {
+    if ( get_option('eo_db_version') !== '3.1.0' ) {
+        EO_Leads::create_table();
+        update_option('eo_db_version', '3.1.0');
+    }
+});
