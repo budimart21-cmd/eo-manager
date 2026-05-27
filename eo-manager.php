@@ -3,7 +3,7 @@
  * Plugin Name:     EO Manager — Leads, CRM & Autoresponder
  * Plugin URI:      https://solusimarketing.xyz
  * Description:     Kelola produk, landing page, custom form, leads CRM, integrasi Fonnte WA & Mailketing email autoresponder. Compatible dengan GeneratePress & Gutenberg.
- * Version:         3.1.0
+ * Version:         3.1.1
  * Author:          Solusi Marketing
  * Author URI:      https://solusimarketing.xyz
  * Text Domain:     eo-manager
@@ -13,7 +13,7 @@
 
 if ( ! defined( 'ABSPATH' ) ) exit;
 
-define( 'EO_PLUGIN_VERSION', '3.1.0' );
+define( 'EO_PLUGIN_VERSION', '3.1.1' );
 define( 'EO_PLUGIN_DIR',     plugin_dir_path( __FILE__ ) );
 define( 'EO_PLUGIN_URL',     plugin_dir_url( __FILE__ ) );
 
@@ -34,17 +34,26 @@ require_once EO_PLUGIN_DIR . 'admin/class-eo-omset-page.php';
 
 /* =========================================================
    IMAGE SIZE — Square untuk eo_product
-   Didaftarkan di after_setup_theme agar tema tidak override
    ========================================================= */
 add_action( 'after_setup_theme', function() {
-    // Square crop: 600x600, hard crop tengah
     add_image_size( 'eo-product-square', 600, 600, true );
-    // Tambahkan ke daftar pilihan ukuran di Media Library
     add_filter( 'image_size_names_choose', function( $sizes ) {
         return array_merge( $sizes, [
-            'eo-product-square' => __( 'EO Product Square (600×600)', 'eo-manager' ),
+            'eo-product-square' => 'EO Product Square (600×600)',
         ]);
     });
+});
+
+/* =========================================================
+   DB UPGRADE — pastikan kolom baru ada tanpa deactivate
+   ========================================================= */
+add_action( 'admin_init', function() {
+    $db_ver = get_option('eo_db_version', '0');
+    if ( version_compare($db_ver, '3.1.1', '<') ) {
+        EO_Leads::create_table();          // dbDelta + maybe_add_price_num_column
+        update_option('eo_db_version', '3.1.1');
+        error_log('[EO] DB upgraded to 3.1.1');
+    }
 });
 
 /* =========================================================
@@ -54,6 +63,7 @@ register_activation_hook( __FILE__, function() {
     EO_Post_Types::register();
     flush_rewrite_rules();
     EO_Leads::create_table();
+    update_option('eo_db_version', '3.1.1');
 });
 
 register_deactivation_hook( __FILE__, 'flush_rewrite_rules' );
@@ -70,11 +80,4 @@ add_action( 'plugins_loaded', function() {
     EO_Settings::init();
     EO_Display_Settings::init();
     EO_Omset_Page::init();
-});
-
-add_action('admin_init', function() {
-    if ( get_option('eo_db_version') !== '3.1.0' ) {
-        EO_Leads::create_table();
-        update_option('eo_db_version', '3.1.0');
-    }
 });
