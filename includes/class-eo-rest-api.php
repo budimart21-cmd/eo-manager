@@ -1,22 +1,19 @@
 <?php
 /**
- * EO REST API v3
- *
- * Perubahan dari v2:
- * - send_email sekarang menggunakan endpoint Mailketing yang benar
- * - Tambahan: add_subscriber_to_list dipanggil saat submit lead
+ * EO REST API v3 — robust untuk guest submission
  */
 class EO_Rest_API {
 
     public static function register_routes() {
 
+        // Route utama submit lead — guest friendly
         register_rest_route( 'eo/v1', '/submit-lead', [
             'methods'             => 'POST',
             'callback'            => [ __CLASS__, 'submit_lead' ],
             'permission_callback' => '__return_true',
         ]);
 
-        /* Backward-compat */
+        // Backward-compat legacy routes
         register_rest_route( 'clo/v1', '/send-wa', [
             'methods'             => WP_REST_Server::CREATABLE,
             'callback'            => [ __CLASS__, 'proxy_wa_legacy' ],
@@ -33,7 +30,7 @@ class EO_Rest_API {
             'permission_callback' => '__return_true',
         ]);
 
-        /* Admin CRUD */
+        // Admin CRUD
         register_rest_route( 'eo/v1', '/lead/(?P<id>\d+)/status', [
             'methods'             => 'POST',
             'callback'            => [ __CLASS__, 'update_lead_status' ],
@@ -48,40 +45,78 @@ class EO_Rest_API {
 
     public static function submit_lead( WP_REST_Request $request ) {
 
-        $nonce = $request->get_header('X-WP-Nonce');
-        if ( ! $nonce || ! wp_verify_nonce( $nonce, 'wp_rest' ) ) {
-            error_log('[EO] Nonce invalid/missing — masih diproses');
-        }
-
-        $body    = $request->get_json_params();
-        $post_id = (int) ( $body['post_id'] ?? 0 );
-        $fields  = $body['fields']  ?? [];
-
-        if ( empty($fields) ) {
-            return new WP_REST_Response([ 'success' => false, 'error' => 'Data kosong.' ], 400);
-        }
-
-        /* Rate limiting */
+        // Rate limiting berdasarkan IP
         $ip_key = 'eo_rl_' . md5( $_SERVER['REMOTE_ADDR'] ?? 'x' );
         $count  = (int) get_transient( $ip_key );
-        if ( $count >= 5 ) {
-            return new WP_REST_Response([ 'success' => false, 'error' => 'Terlalu banyak permintaan.' ], 429);
+        if ( $count >= 10 ) {
+            return new WP_REST_Response([
+                'success' => false,
+                'error'   => 'Terlalu banyak permintaan. Coba lagi nanti.',
+            ], 429);
         }
         set_transient( $ip_key, $count + 1, 10 * MINUTE_IN_SECONDS );
+
+        // Ambil body — support JSON dan form-data
+        $body = $request->get_json_params();
+        if ( empty($body) ) {
+            $body = $request->get_params();
+        }
+
+        $post_id = (int) ( $body['post_id'] ?? 0 );
+        $fields  = $body['fields'] ?? [];
+
+        // Jika fields kosong, coba ambil langsung dari body (fallback)
+        if ( empty($fields) ) {
+            $fields = $body;
+            unset( $fields['post_id'] );
+        }
+
+        if ( empty($fields) ) {
+            error_log('[EO Submit] Data kosong. Body: ' . wp_json_encode($body));
+            return new WP_REST_Response([
+                'success' => false,
+                'error'   => 'Data kosong.',
+            ], 400);
+        }
+
+        // Validasi minimal: nama dan wa wajib ada
+        $nama = sanitize_text_field( $fields['nama'] ?? '' );
+        $wa   = sanitize_text_field( $fields['wa']   ?? '' );
+
+        if ( ! $nama || ! $wa ) {
+            error_log('[EO Submit] Nama/WA kosong. Fields: ' . wp_json_encode($fields));
+            return new WP_REST_Response([
+                'success' => false,
+                'error'   => 'Nama dan WhatsApp wajib diisi.',
+            ], 400);
+        }
 
         $fields['post_id']     = $post_id;
         $fields['_source_url'] = $request->get_header('referer') ?? '';
 
+        // Simpan lead
         $lead_id = EO_Leads::save( $fields );
 
         if ( ! $lead_id ) {
-            return new WP_REST_Response([ 'success' => false, 'error' => 'Gagal menyimpan data.' ], 500);
+            error_log('[EO Submit] Gagal simpan lead. Fields: ' . wp_json_encode($fields));
+            // Tetap coba kirim notifikasi meski DB gagal
+            $config = $post_id ? EO_Form_Builder::get_form_config( $post_id ) : [];
+            EO_Integrations::send_followup( $fields, $config );
+            EO_Integrations::notify_internal( $fields, $config );
+
+            return new WP_REST_Response([
+                'success' => false,
+                'error'   => 'Gagal menyimpan data ke database.',
+            ], 500);
         }
 
-        $config = EO_Form_Builder::get_form_config( $post_id );
+        // Ambil config form dan kirim autoresponder
+        $config = $post_id ? EO_Form_Builder::get_form_config( $post_id ) : [];
 
         EO_Integrations::send_followup( $fields, $config );
         EO_Integrations::notify_internal( $fields, $config );
+
+        error_log('[EO Submit] Lead #' . $lead_id . ' tersimpan. Nama: ' . $nama . ' WA: ' . $wa);
 
         return new WP_REST_Response([
             'success' => true,
